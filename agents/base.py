@@ -47,7 +47,21 @@ PLANNER_SCHEMA = {
         },
         "complexity_level": {"type": "string", "enum": ["simple", "moderate", "complex"]},
         "thinking_budget": {"type": "integer"},
-        "success_criteria": {"type": "string"}
+        "success_criteria": {"type": "string"},
+        "research_needed": {"type": "boolean"},
+        "research_steps": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "type": {"type": "string", "enum": ["search"]},
+                    "query": {"type": "string"},
+                    "purpose": {"type": "string"}
+                },
+                "required": ["id", "type", "query"]
+            }
+        }
     },
     "required": ["task", "reasoning_type", "key_aspects", "complexity_level", "thinking_budget"]
 }
@@ -61,23 +75,59 @@ CRITIC_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "agent_id": {"type": "string"},
-                    "scores": {
+                    "rubric_scores": {
                         "type": "object",
                         "properties": {
-                            "correctness": {"type": "integer"},
-                            "completeness": {"type": "integer"},
-                            "clarity": {"type": "integer"},
-                            "insight": {"type": "integer"},
-                            "evidence": {"type": "integer"}
+                            "clarity_coherence": {
+                                "type": "object",
+                                "properties": {
+                                    "score": {"type": "number"},
+                                    "justification": {"type": "string"}
+                                },
+                                "required": ["score", "justification"]
+                            },
+                            "logical_soundness": {
+                                "type": "object",
+                                "properties": {
+                                    "score": {"type": "number"},
+                                    "justification": {"type": "string"}
+                                },
+                                "required": ["score", "justification"]
+                            },
+                            "completeness_depth": {
+                                "type": "object",
+                                "properties": {
+                                    "score": {"type": "number"},
+                                    "justification": {"type": "string"}
+                                },
+                                "required": ["score", "justification"]
+                            },
+                            "originality_insight": {
+                                "type": "object",
+                                "properties": {
+                                    "score": {"type": "number"},
+                                    "justification": {"type": "string"}
+                                },
+                                "required": ["score", "justification"]
+                            },
+                            "evidence_support": {
+                                "type": "object",
+                                "properties": {
+                                    "score": {"type": "number"},
+                                    "justification": {"type": "string"}
+                                },
+                                "required": ["score", "justification"]
+                            }
                         },
-                        "required": ["correctness", "completeness", "clarity", "insight", "evidence"]
+                        "required": ["clarity_coherence", "logical_soundness", "completeness_depth", "originality_insight", "evidence_support"]
                     },
-                    "total_score": {"type": "integer"},
+                    "weighted_total_score": {"type": "number"},
                     "strengths": {"type": "array", "items": {"type": "string"}},
                     "weaknesses": {"type": "array", "items": {"type": "string"}},
-                    "feedback": {"type": "string"}
+                    "targeted_improvements": {"type": "array", "items": {"type": "string"}},
+                    "detailed_feedback": {"type": "string"}
                 },
-                "required": ["agent_id", "scores", "total_score"]
+                "required": ["agent_id", "rubric_scores", "weighted_total_score"]
             }
         },
         "ranking": {
@@ -87,13 +137,14 @@ CRITIC_SCHEMA = {
                 "properties": {
                     "rank": {"type": "integer"},
                     "agent_id": {"type": "string"},
-                    "total_score": {"type": "integer"},
+                    "weighted_total_score": {"type": "number"},
                     "rationale": {"type": "string"}
                 },
-                "required": ["rank", "agent_id", "total_score"]
+                "required": ["rank", "agent_id", "weighted_total_score"]
             }
         },
-        "overall_assessment": {"type": "string"}
+        "overall_assessment": {"type": "string"},
+        "improvement_suggestions": {"type": "array", "items": {"type": "string"}}
     },
     "required": ["evaluations", "ranking"]
 }

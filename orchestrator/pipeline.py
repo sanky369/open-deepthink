@@ -2,6 +2,7 @@
 Deep Think orchestration pipeline for coordinating all agents.
 """
 import asyncio
+import os
 from typing import List, Dict, Any, Optional
 import structlog
 from clients.gemini import GeminiClient
@@ -9,6 +10,8 @@ from agents.planner import PlannerAgent
 from agents.thinker import ThinkerAgent
 from agents.critic import CriticAgent
 from agents.refiner import RefinerAgent
+from agents.tools import ToolAgent
+from agents.meta_refiner import MetaRefinerAgent
 
 logger = structlog.get_logger()
 
@@ -51,6 +54,18 @@ class DeepThinkPipeline:
             agent_id="refiner",
             gemini_client=gemini_client,
             prompt_template=prompt_templates.get("refiner", "")
+        )
+        
+        self.tool_agent = ToolAgent(
+            agent_id="tools",
+            gemini_client=gemini_client,
+            prompt_template=""  # Tool agent doesn't use prompt templates
+        )
+        
+        self.meta_refiner = MetaRefinerAgent(
+            agent_id="meta_refiner",
+            gemini_client=gemini_client,
+            prompt_template=prompt_templates.get("meta_refiner", "")
         )
         
         logger.info(
@@ -151,11 +166,44 @@ class DeepThinkPipeline:
             "n_paths": n_paths
         })
         
+        # Stage 1.5: Research (if needed)
+        research_results = None
+        plan = plan_result.get("plan", {})
+        
+        if plan.get("research_needed", False) and plan.get("research_steps"):
+            logger.debug("pipeline_stage", stage="research", steps_count=len(plan["research_steps"]))
+            
+            try:
+                research_results = await self.tool_agent.execute({
+                    "research_steps": plan["research_steps"]
+                })
+                
+                logger.info(
+                    "research_stage_complete",
+                    research_summary=research_results.get("summary", "No results")
+                )
+                
+            except Exception as e:
+                logger.warning(
+                    "research_stage_failed",
+                    error=str(e),
+                    fallback="continuing_without_research"
+                )
+                # Continue without research rather than failing the entire pipeline
+                research_results = None
+        
         # Stage 2: Parallel Thinking
         logger.debug("pipeline_stage", stage="thinking", n_paths=n_paths)
         
         # Create thinker tasks with different seeds for diversity
         thinker_tasks = []
+        
+        # Prepare thinker input data with research context
+        thinker_input = {
+            **plan_result,
+            "research_context": research_results.get("tool_results") if research_results else None
+        }
+        
         for i in range(n_paths):
             thinker = ThinkerAgent(
                 agent_id=f"thinker_{i}",
@@ -163,7 +211,7 @@ class DeepThinkPipeline:
                 prompt_template=self.prompt_templates.get("thinker", ""),
                 seed=i
             )
-            task = thinker.execute(plan_result)
+            task = thinker.execute(thinker_input)
             thinker_tasks.append(task)
         
         # Execute all thinkers in parallel
@@ -203,7 +251,7 @@ class DeepThinkPipeline:
         # Stage 4: Refinement
         logger.debug("pipeline_stage", stage="refinement", top_k=top_k)
         
-        final_result = await self.refiner.execute(
+        refinement_result = await self.refiner.execute(
             {
                 "critique": critique_result,
                 "candidates": valid_candidates
@@ -211,24 +259,63 @@ class DeepThinkPipeline:
             top_k=top_k
         )
         
+        # Stage 5: Meta-Refinement
+        logger.debug("pipeline_stage", stage="meta_refinement")
+        
+        try:
+            meta_refinement_result = await self.meta_refiner.execute({
+                "query": query,
+                "refined_solution": refinement_result.get("final_answer", "")
+            })
+            
+            # Use meta-refined answer as the final answer
+            final_answer = meta_refinement_result.get("meta_refined_answer", refinement_result.get("final_answer", ""))
+            
+            logger.info(
+                "meta_refinement_stage_complete",
+                synthesis_type=meta_refinement_result.get("synthesis_type"),
+                elegance_score=meta_refinement_result.get("elegance_score"),
+                intellectual_depth=meta_refinement_result.get("intellectual_depth")
+            )
+            
+        except Exception as e:
+            logger.warning(
+                "meta_refinement_stage_failed",
+                error=str(e),
+                fallback="using_standard_refinement"
+            )
+            # Fall back to standard refinement if meta-refinement fails
+            meta_refinement_result = None
+            final_answer = refinement_result.get("final_answer", "Unable to generate answer")
+        
         # Compile final response
+        pipeline_stages = ["planning", "thinking", "critique", "refinement", "meta_refinement"]
+        if research_results:
+            pipeline_stages.insert(1, "research")  # Insert research stage after planning
+        
         return {
             "query": query,
-            "answer": final_result.get("final_answer", "Unable to generate answer"),
+            "answer": final_answer,
             "metadata": {
                 "n_paths": n_paths,
                 "candidates_generated": len(valid_candidates),
                 "candidates_failed": failed_count,
                 "top_k_used": top_k,
-                "synthesis_approach": final_result.get("synthesis_approach"),
-                "confidence_level": final_result.get("confidence_level"),
-                "pipeline_stages": ["planning", "thinking", "critique", "refinement"]
+                "synthesis_approach": refinement_result.get("synthesis_approach"),
+                "confidence_level": refinement_result.get("confidence_level"),
+                "research_conducted": research_results is not None,
+                "meta_refinement_applied": meta_refinement_result is not None,
+                "elegance_score": meta_refinement_result.get("elegance_score") if meta_refinement_result else None,
+                "intellectual_depth": meta_refinement_result.get("intellectual_depth") if meta_refinement_result else None,
+                "pipeline_stages": pipeline_stages
             },
             "detailed_results": {
                 "plan": plan_result,
+                "research": research_results,
                 "candidates": valid_candidates,
                 "critique": critique_result,
-                "synthesis": final_result
+                "synthesis": refinement_result,
+                "meta_refinement": meta_refinement_result
             }
         }
     
@@ -260,7 +347,9 @@ class DeepThinkPipeline:
             for agent_name, agent in [
                 ("planner", self.planner),
                 ("critic", self.critic),
-                ("refiner", self.refiner)
+                ("refiner", self.refiner),
+                ("tool_agent", self.tool_agent),
+                ("meta_refiner", self.meta_refiner)
             ]:
                 try:
                     agent_info = agent.get_agent_info()
@@ -307,9 +396,16 @@ class DeepThinkPipeline:
             "agents": {
                 "planner": self.planner.get_agent_info(),
                 "critic": self.critic.get_agent_info(),
-                "refiner": self.refiner.get_agent_info()
+                "refiner": self.refiner.get_agent_info(),
+                "tool_agent": self.tool_agent.get_agent_info(),
+                "meta_refiner": self.meta_refiner.get_agent_info()
             },
             "prompt_templates": {
                 name: len(template) for name, template in self.prompt_templates.items()
-            }
+            },
+            "research_capabilities": {
+                "tavily_api_configured": bool(os.getenv("TAVILY_API_KEY")),
+                "fallback_search_available": True
+            },
+            "meta_refinement_enabled": True
         }

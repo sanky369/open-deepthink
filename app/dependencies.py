@@ -25,7 +25,8 @@ async def load_prompt_templates() -> Dict[str, str]:
         "planner": "prompts/planner.txt",
         "thinker": "prompts/thinker.txt",
         "critic": "prompts/critic.txt",
-        "refiner": "prompts/refiner.txt"
+        "refiner": "prompts/refiner.txt",
+        "meta_refiner": "prompts/meta_refiner.txt"
     }
     
     for template_name, file_path in template_files.items():

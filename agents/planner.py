@@ -123,7 +123,9 @@ class PlannerAgent(BaseAgent):
             "success_criteria": plan.get(
                 "success_criteria",
                 "Clear, accurate, and well-reasoned answer"
-            )
+            ),
+            "research_needed": plan.get("research_needed", False),
+            "research_steps": plan.get("research_steps", [])
         }
         
         # Ensure key_aspects is a list
@@ -134,10 +136,18 @@ class PlannerAgent(BaseAgent):
         if isinstance(enhanced_plan["domain_hints"], str):
             enhanced_plan["domain_hints"] = [enhanced_plan["domain_hints"]]
         
+        # Validate research steps
+        if enhanced_plan["research_steps"]:
+            enhanced_plan["research_steps"] = self._validate_research_steps(
+                enhanced_plan["research_steps"]
+            )
+            enhanced_plan["research_needed"] = True  # Set to true if steps exist
+        
         logger.debug(
             "plan_validated",
             agent_id=self.agent_id,
-            enhanced_plan=enhanced_plan
+            research_needed=enhanced_plan["research_needed"],
+            research_steps_count=len(enhanced_plan["research_steps"])
         )
         
         return enhanced_plan
@@ -171,6 +181,40 @@ class PlannerAgent(BaseAgent):
         # Default budget
         return 10
     
+    def _validate_research_steps(self, research_steps: list) -> list:
+        """
+        Validate and clean research steps.
+        
+        Args:
+            research_steps: Raw research steps from plan
+            
+        Returns:
+            Validated research steps
+        """
+        validated_steps = []
+        
+        for i, step in enumerate(research_steps[:5]):  # Limit to 5 steps max
+            if isinstance(step, dict):
+                validated_step = {
+                    "id": step.get("id", f"research_{i+1}"),
+                    "type": step.get("type", "search"),
+                    "query": step.get("query", "").strip(),
+                    "purpose": step.get("purpose", "Research for additional context")
+                }
+                
+                # Only include if query is not empty
+                if validated_step["query"]:
+                    validated_steps.append(validated_step)
+        
+        logger.debug(
+            "research_steps_validated",
+            agent_id=self.agent_id,
+            original_count=len(research_steps),
+            validated_count=len(validated_steps)
+        )
+        
+        return validated_steps
+    
     def _create_fallback_plan(self, query: str) -> Dict[str, Any]:
         """
         Create a fallback plan when JSON parsing fails.
@@ -194,5 +238,7 @@ class PlannerAgent(BaseAgent):
             "domain_hints": ["general"],
             "complexity_level": "moderate",
             "thinking_budget": 10,
-            "success_criteria": "Clear and accurate answer"
+            "success_criteria": "Clear and accurate answer",
+            "research_needed": False,
+            "research_steps": []
         }

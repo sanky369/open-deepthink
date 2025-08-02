@@ -77,7 +77,7 @@ class CriticAgent(BaseAgent):
                 "critic_execution_complete",
                 agent_id=self.agent_id,
                 evaluations_count=len(critique.get("evaluations", [])),
-                top_score=max([e.get("total_score", 0) for e in critique.get("evaluations", [])], default=0)
+                top_score=max([e.get("weighted_total_score", 0) for e in critique.get("evaluations", [])], default=0)
             )
             
             return critique
@@ -201,23 +201,43 @@ class CriticAgent(BaseAgent):
         Returns:
             Validated evaluation
         """
-        scores = evaluation.get("scores", {})
+        rubric_scores = evaluation.get("rubric_scores", {})
         
-        # Normalize scores to 0-10 range
-        normalized_scores = {}
-        for criterion in ["correctness", "completeness", "clarity", "insight", "evidence"]:
-            raw_score = scores.get(criterion, 5)
-            normalized_scores[criterion] = max(0, min(10, int(raw_score)))
+        # Validate and normalize rubric scores
+        validated_rubrics = {}
+        total_weighted_score = 0
         
-        total_score = sum(normalized_scores.values())
+        rubric_weights = {
+            "clarity_coherence": 0.2,
+            "logical_soundness": 0.4,
+            "completeness_depth": 0.3,
+            "originality_insight": 0.1,
+            "evidence_support": 0.2
+        }
+        
+        for rubric_name, weight in rubric_weights.items():
+            rubric_data = rubric_scores.get(rubric_name, {})
+            raw_score = rubric_data.get("score", 5)
+            normalized_score = max(0, min(10, float(raw_score)))
+            
+            validated_rubrics[rubric_name] = {
+                "score": normalized_score,
+                "justification": rubric_data.get("justification", f"Standard {rubric_name.replace('_', ' ')} evaluation")
+            }
+            
+            total_weighted_score += normalized_score * weight
+        
+        # Calculate final weighted score (should be 0-10 range)
+        final_weighted_score = round(total_weighted_score, 2)
         
         return {
             "agent_id": agent_id,
-            "scores": normalized_scores,
-            "total_score": total_score,
-            "strengths": evaluation.get("strengths", ["General reasoning"]),
-            "weaknesses": evaluation.get("weaknesses", ["Could be improved"]),
-            "feedback": evaluation.get("feedback", "Standard evaluation")
+            "rubric_scores": validated_rubrics,
+            "weighted_total_score": final_weighted_score,
+            "strengths": evaluation.get("strengths", ["General reasoning approach"]),
+            "weaknesses": evaluation.get("weaknesses", ["Could benefit from improvement"]),
+            "targeted_improvements": evaluation.get("targeted_improvements", ["Enhance reasoning clarity"]),
+            "detailed_feedback": evaluation.get("detailed_feedback", "Standard evaluation - detailed analysis unavailable")
         }
     
     def _create_default_evaluation(self, agent_id: Any) -> Dict[str, Any]:
@@ -230,19 +250,21 @@ class CriticAgent(BaseAgent):
         Returns:
             Default evaluation structure
         """
+        default_rubrics = {}
+        for rubric_name in ["clarity_coherence", "logical_soundness", "completeness_depth", "originality_insight", "evidence_support"]:
+            default_rubrics[rubric_name] = {
+                "score": 5.0,
+                "justification": f"Default {rubric_name.replace('_', ' ')} score - detailed evaluation unavailable"
+            }
+        
         return {
             "agent_id": agent_id,
-            "scores": {
-                "correctness": 5,
-                "completeness": 5,
-                "clarity": 5,
-                "insight": 5,
-                "evidence": 5
-            },
-            "total_score": 25,
+            "rubric_scores": default_rubrics,
+            "weighted_total_score": 5.0,  # Weighted average with default scores
             "strengths": ["Attempted the problem"],
             "weaknesses": ["Limited evaluation available"],
-            "feedback": "Default evaluation - original response may have been incomplete"
+            "targeted_improvements": ["Provide more detailed reasoning"],
+            "detailed_feedback": "Default evaluation - original response may have been incomplete or failed to parse"
         }
     
     def _create_ranking(
@@ -258,10 +280,10 @@ class CriticAgent(BaseAgent):
         Returns:
             Ranked list of candidates
         """
-        # Sort by total score (descending)
+        # Sort by weighted total score (descending)
         sorted_evals = sorted(
             evaluations,
-            key=lambda x: x.get("total_score", 0),
+            key=lambda x: x.get("weighted_total_score", 0),
             reverse=True
         )
         
@@ -269,7 +291,7 @@ class CriticAgent(BaseAgent):
         for rank, evaluation in enumerate(sorted_evals, 1):
             ranking.append({
                 "agent_id": evaluation.get("agent_id"),
-                "total_score": evaluation.get("total_score", 0),
+                "weighted_total_score": evaluation.get("weighted_total_score", 0),
                 "rank": rank,
                 "rationale": self._generate_ranking_rationale(evaluation, rank)
             })
@@ -291,16 +313,26 @@ class CriticAgent(BaseAgent):
         Returns:
             Rationale string
         """
-        total_score = evaluation.get("total_score", 0)
-        scores = evaluation.get("scores", {})
+        weighted_score = evaluation.get("weighted_total_score", 0)
+        rubric_scores = evaluation.get("rubric_scores", {})
+        
+        # Find the highest scoring rubric
+        highest_rubric = None
+        highest_score = 0
+        for rubric_name, rubric_data in rubric_scores.items():
+            score = rubric_data.get("score", 0)
+            if score > highest_score:
+                highest_score = score
+                highest_rubric = rubric_name.replace("_", " ")
         
         if rank == 1:
-            highest_criterion = max(scores.items(), key=lambda x: x[1])
-            return f"Top scorer with {total_score}/50 points, excellent {highest_criterion[0]}"
+            return f"Top performer with {weighted_score:.1f}/10 weighted score, excels in {highest_rubric or 'multiple areas'} ({highest_score:.1f}/10)"
         elif rank <= 3:
-            return f"Strong candidate with {total_score}/50 points, good overall performance"
+            return f"Strong candidate with {weighted_score:.1f}/10 weighted score, solid performance across rubrics"
+        elif rank <= 5:
+            return f"Good performance with {weighted_score:.1f}/10 weighted score, shows potential for improvement"
         else:
-            return f"Moderate performance with {total_score}/50 points, room for improvement"
+            return f"Moderate performance with {weighted_score:.1f}/10 weighted score, requires significant enhancement"
     
     def _create_fallback_critique(
         self,
